@@ -9,15 +9,17 @@ OUTPUTDIR := bin/
 
 .SUFFIXES : .c $(OBJSUFFIX)
 
-.PHONY : clean mkdirs skub
+.PHONY : clean mkdirs skub test
 
 
 SOURCES := skub.c
 HEADERS :=
 
-all: mkdirs skub
+SKUB := $(OUTPUTDIR)skub
 
-skub: $(OUTPUTDIR)/$(TARGET)
+all: mkdirs skub test
+
+skub: $(SKUB)
 
 $(OUTPUTDIR)$(TARGET): $(OUTPUTDIR) $(SOURCES) $(HEADERS)
 	$(CC) $(LDFLAGS) -o $@ $(CFLAGS) $(SOURCES)
@@ -26,6 +28,10 @@ mkdirs: $(OUTPUTDIR)
 
 $(OUTPUTDIR):
 	mkdir -p $(OUTPUTDIR)
+
+test: $(SKUB)
+	$(SKUB) test.cpp.skub
+
 
 clean:
 	rm -rf $(OUTPUTDIR)/$(TARGET)
