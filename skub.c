@@ -7,6 +7,7 @@
 
 #include "external/lua/src/lua.h"
 #include "external/lua/src/lualib.h"
+#include "external/lua/src/lauxlib.h"
 
 typedef struct StringSpan
 {
@@ -189,6 +190,34 @@ static void readChildNode(
 			'}');
 		break;
 
+	case ':':
+		child->flavor = flavor | SKUB_STMT;
+		cursor++;
+		child->body.begin = cursor;
+		for(;;)
+		{
+			switch(*cursor)
+			{
+			default:
+				cursor++;
+				continue;
+
+			case '\n': case '\r':
+				break;
+
+			case 0:
+				if(cursor == end)
+				{
+					break;
+				}
+				cursor++;
+				continue;
+			}
+			break;
+		}
+		child->body.end = cursor;
+		break;
+
 	/* TODO: handle a `:` here, and read
 	a body that spans to the end of the line */
 
@@ -365,40 +394,61 @@ static char* pickOutputPath(
 	return buffer;
 }
 
+typedef struct SkubWriter
+{
+	char* cursor;
+	char* begin;
+	char* end;
+} SkubWriter;
+
 static void writeRaw(
-	lua_State* 	L,
-	int*		ioCount,
+	SkubWriter*	writer,
 	char const* begin,
 	char const* end)
 {
-	lua_pushlstring(L, begin, end-begin);
-	(*ioCount)++;
+	size_t len = end - begin;
+	char* c = writer->cursor;
+	char* e = writer->end;
+	if(c + len > e)
+	{
+		char* b = writer->begin;
+
+		size_t oldSize = e - b;
+		size_t newSize = oldSize ? oldSize * 2 : 1024; 
+
+		char* n = (char*) realloc(b, newSize);
+
+		writer->begin = n;
+		writer->end = n + newSize;
+		c = n + (c - b);
+	}
+
+	memcpy(c, begin, len);
+	writer->cursor = c + len;
 }
 
 static void writeRawT(
-	lua_State* 	L,
-	int*		ioCount,
+	SkubWriter*	writer,
 	char const* begin)
 {
-	writeRaw(L, ioCount, begin, begin + strlen(begin));
+	writeRaw(writer, begin, begin + strlen(begin));
 }
 
 static void emitRaw(
-	lua_State* 	L,
-	int*		ioCount,
+	SkubWriter*	writer,
 	char const* begin,
 	char const* end)
 {
 	if(begin == end)
 		return;
 
-	writeRawT(L, ioCount, " _RAW([==[");
+	writeRawT(writer, " _RAW([==[");
 	if(*begin == '\n')
 	{
-		writeRawT(L, ioCount, "\n");
+		writeRawT(writer, "\n");
 	}
-	writeRaw(L, ioCount, begin, end);
-	writeRawT(L, ioCount, "]==]);");
+	writeRaw(writer, begin, end);
+	writeRawT(writer, "]==]);");
 }
 
 static int isEmpty(StringSpan span)
@@ -413,32 +463,27 @@ enum {
 };
 
 static void emitNode(
-	lua_State* 	L,
-	int*		ioCount,
+	SkubWriter*	writer,
 	SkubNode*	node);
 
 static void emitQuoteExprNode(
-	lua_State* 	L,
-	int*		ioCount,
+	SkubWriter*	writer,
 	SkubNode*	node)
 {
-	writeRawT(L, ioCount, "_QUOTE(function() ");
-//	writeRaw(L, ioCount, node->args.begin, node->args.end);
-	emitNode(L, ioCount, node);
-	writeRawT(L, ioCount, "end)");
+	writeRawT(writer, "_QUOTE(function() ");
+	emitNode(writer, node);
+	writeRawT(writer, "end)");
 }
 
 static void emitQuoteStmtNode(
-	lua_State* 	L,
-	int*		ioCount,
+	SkubWriter*	writer,
 	SkubNode*	node)
 {
-	emitNode(L, ioCount, node);
+	emitNode(writer, node);
 }
 
 static void emitQuoteNode(
-	lua_State* 	L,
-	int*		ioCount,
+	SkubWriter*	writer,
 	SkubNode*	node)
 {
 	StringSpan span = node->text;
@@ -447,14 +492,14 @@ static void emitQuoteNode(
 	{
 	case SKUB_QUOTE_EXPR:
 		{
-			emitQuoteExprNode(L, ioCount, node);
+			emitQuoteExprNode(writer, node);
 		}
 		break;
 
 	case SKUB_QUOTE_STMT:
 		{
 			// Just a body -> raw statement
-			emitQuoteStmtNode(L, ioCount, node);
+			emitQuoteStmtNode(writer, node);
 		}
 		break;
 
@@ -474,52 +519,49 @@ static void emitQuoteNode(
 // Here we are emitting an expression
 // to be spliced into the output...
 static void emitSpliceExprNode(
-	lua_State* 	L,
-	int*		ioCount,
+	SkubWriter*	writer,
 	SkubNode*	node)
 {
-	writeRawT(L, ioCount, " _SPLICE(");
+	writeRawT(writer, " _SPLICE(");
 
 	char const* cursor = node->body.begin;
 	for(SkubNode* nn = node->firstChild; nn; nn = nn->next)
 	{
-		writeRaw(L, ioCount, cursor, nn->text.begin);
+		writeRaw(writer, cursor, nn->text.begin);
 
 		// Embedded nodes represent quotes that
 		// transition from Lua->C++
-		emitQuoteNode(L, ioCount, nn);
+		emitQuoteNode(writer, nn);
 
 		cursor = nn->text.end;
 	}
-	writeRaw(L, ioCount, cursor, node->body.end);
+	writeRaw(writer, cursor, node->body.end);
 
-	writeRawT(L, ioCount, "); ");
+	writeRawT(writer, "); ");
 }
 
 static void emitSpliceStmtNode(
-	lua_State* 	L,
-	int*		ioCount,
+	SkubWriter*	writer,
 	SkubNode*	node)
 {
 	char const* cursor = node->body.begin;
 	for(SkubNode* nn = node->firstChild; nn; nn = nn->next)
 	{
-		writeRaw(L, ioCount, cursor, nn->text.begin);
+		writeRaw(writer, cursor, nn->text.begin);
 
 		// Embedded nodes represent quotes that
 		// transition from Lua->C++
-		emitQuoteNode(L, ioCount, nn);
+		emitQuoteNode(writer, nn);
 
 		cursor = nn->text.end;
 	}
-	writeRaw(L, ioCount, cursor, node->body.end);
+	writeRaw(writer, cursor, node->body.end);
 }
 
 // Emit a node that "escapes" from
 // quoted text back into Lua
 static void emitEscapeNode(
-	lua_State* 	L,
-	int*		ioCount,
+	SkubWriter*	writer,
 	SkubNode*	node)
 {
 	StringSpan span = node->text;
@@ -530,14 +572,14 @@ static void emitEscapeNode(
 	case SKUB_SPLICE_EXPR:
 		{
 			// Just args -> splice of expr
-			emitSpliceExprNode(L, ioCount, node);
+			emitSpliceExprNode(writer, node);
 		}
 		break;
 
 	case SKUB_SPLICE_STMT:
 		{
 			// Just a body -> raw statement
-			emitSpliceStmtNode(L, ioCount, node);
+			emitSpliceStmtNode(writer, node);
 		}
 		break;
 
@@ -556,20 +598,19 @@ static void emitEscapeNode(
 // Here we are emitting top-level text,
 // which may have embedded escapes.
 static void emitNode(
-	lua_State* 	L,
-	int*		ioCount,
+	SkubWriter*	writer,
 	SkubNode*	node)
 {
 	char const* cursor = node->body.begin;
 	for(SkubNode* nn = node->firstChild; nn; nn = nn->next)
 	{
-		emitRaw(L, ioCount, cursor, nn->text.begin);
+		emitRaw(writer, cursor, nn->text.begin);
 
-		emitEscapeNode(L, ioCount, nn);
+		emitEscapeNode(writer, nn);
 
 		cursor = nn->text.end;
 	}
-	emitRaw(L, ioCount, cursor, node->body.end);
+	emitRaw(writer, cursor, node->body.end);
 }
 
 static char const* luaReadCallback(
@@ -589,45 +630,60 @@ static char const* luaReadCallback(
 
 static int luaRawCallback(lua_State* L)
 {
+//	fprintf(stderr, "rawCallback[[[\n");
 	FILE* file = (FILE*) lua_touserdata(L, lua_upvalueindex(1));
 
 	size_t len = 0;
-	char const* text = lua_tolstring(L, 1, &len);
+	char const* text = luaL_tolstring(L, 1, &len);
 	fprintf(file, "%.*s", (int)(len), text);
+
+//	fprintf(stderr, "%.*s]]]\n", (int)(len), text);
 
 	return 0;
 }
 
 static int luaSpliceCallback(lua_State* L)
 {
+//	fprintf(stderr, "spliceCallback[[[\n");
 	FILE* file = (FILE*) lua_touserdata(L, lua_upvalueindex(1));
 
 	size_t len = 0;
-	char const* text = lua_tolstring(L, 1, &len);
+	char const* text = luaL_tolstring(L, 1, &len);
 	fprintf(file, "%.*s", (int)(len), text);
+
+//	fprintf(stderr, "%.*s]]]\n", (int)(len), text);
 
 	return 0;
 }
+
+char const* gOutputPath;
 
 static void processFile(
 	lua_State* 	L,
 	char const* inputPath)
 {
 	StringSpan span;
-	char* outputPath;
+	char const* outputPath;
 
 	/* Parse file to generate a template,
 	which we will evaluate using Lua */
 
 	/* Determine path for output file to generate */
-	outputPath = pickOutputPath(inputPath);
-	if(!outputPath)
+	if(gOutputPath)
 	{
-		fprintf(stderr,
-			"skub: cannot pick output path based on input path '%s'\n"
-			"      skub expects input path of the form '*.skub'\n",
-			inputPath);
-		return;
+		outputPath = gOutputPath;
+	}
+	else
+	{
+		outputPath = pickOutputPath(inputPath);
+		if(!outputPath)
+		{
+			fprintf(stderr,
+				"skub: cannot pick output path based on input path '%s'\n"
+				"      skub expects input path of the form '*.skub'\n",
+				inputPath);
+			return;
+		}		
 	}
 
 //	fprintf(stderr, "skubbing '%s' -> '%s'\n", inputPath, outputPath);
@@ -641,11 +697,10 @@ static void processFile(
 
 	SkubNode* rootNode = processSpan(span.begin, span.end);
 
-	int count = 0;
-
-	writeRawT(L, &count,
+	SkubWriter writer = { 0, 0, 0 };
+	writeRawT(&writer,
 		"local _RAW, _SPLICE = ...; "
-		"local _ctxt = {}"
+		"local _ctxt = {} "
 		"local function _QUOTE(f) "
 			"local _saved_raw = _RAW; "
 			"local _saved_splice = _SPLICE; "
@@ -659,16 +714,15 @@ static void processFile(
 			"return table.concat(_strs); "
 		"end; ");
 
-	emitNode(L, &count, rootNode);
+	emitNode(&writer, rootNode);
+	char const* empty = "";
+	writeRaw(&writer, empty, empty + 1);
 
-	lua_concat(L, count);
-
-	size_t len;
 	StringSpan processed;
-	processed.begin = lua_tolstring(L, 1, &len);
-	processed.end = processed.begin + len;
+	processed.begin = writer.begin;
+	processed.end = writer.cursor - 1;
 
-//	fprintf(stderr, "X{{{{%.*s}}}}\n", (int)(len), processed.begin);
+//	fprintf(stderr, "X{{{{%.*s}}}}\n", (int)(processed.end - processed.begin), processed.begin);
 
 	StringSpan readerState = processed;
 	int err = lua_load(
@@ -685,6 +739,26 @@ static void processFile(
 	}
 
 	FILE* output = fopen(outputPath, "w");
+
+	fprintf(output, "/* skub: generated code - do not edit */\n");
+	fprintf(output, "#line 1 \"");
+	for(char const* cc = inputPath; *cc; ++cc)
+	{
+		switch(*cc)
+		{
+		default:
+			fprintf(output, "%c", *cc);
+			break;
+
+		case '\\':
+			fprintf(output, "/");
+			break;
+		}
+	}
+	fprintf(output, "\"\n");
+
+
+
 	if(!output)
 	{
 		fprintf(stderr,
@@ -735,6 +809,48 @@ int main(
 	if(argCursor != argEnd)
 		appName = *argCursor++;
 
+	char** writeCursor = argv;
+	while(argCursor != argEnd)
+	{
+		char const* arg = *argCursor++;
+		if(arg[0] == '-')
+		{
+			if(arg[1] == '-' && arg[2] == 0)
+			{
+				break;
+			}
+			else if(strcmp(arg, "-o") == 0)
+			{
+				if(argCursor == argEnd)
+				{
+					fprintf(stderr, "skub: expected argument for option '%s'\n", arg);
+					exit(1);					
+				}
+
+				arg = *argCursor++;
+				gOutputPath = arg;
+			}
+			else
+			{
+				fprintf(stderr, "skub: unknown option '%s'\n", arg);
+				exit(1);
+			}
+
+		}
+		else
+		{
+			*writeCursor++ = (char*) arg;
+		}
+	}
+	while(argCursor != argEnd)
+	{
+		*writeCursor++ = *argCursor++;
+	}
+
+	argEnd = argv + (writeCursor - argv);
+	argCursor = argv;
+
+
 	lua_State* L = lua_newstate(&allocatorForLua, 0);
 	if(!L)
 	{
@@ -749,6 +865,8 @@ int main(
 		char const* inputPath = *argCursor++;
 		processFile(L, inputPath);
 	}
+
+	exit(0);
 
 	lua_close(L);
 
