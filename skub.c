@@ -656,6 +656,7 @@ static int luaSpliceCallback(lua_State* L)
 	return 0;
 }
 
+char const* gIncludePath;
 char const* gOutputPath;
 
 static void processFile(
@@ -796,6 +797,22 @@ static void* allocatorForLua(
 	return realloc(ptr, newSize);
 }
 
+char const* readArg(
+	char const* opt,
+	char*** ioArgCursor,
+	char** argEnd)
+{
+	if(*ioArgCursor == argEnd)
+	{
+		fprintf(stderr, "skub: expected argument for option '%s'\n", opt);
+		exit(1);					
+	}
+	else
+	{
+		return *(*ioArgCursor)++;
+	}
+}
+
 int main(
 	int 	argc,
 	char**	argv)
@@ -819,16 +836,19 @@ int main(
 			{
 				break;
 			}
-			else if(strcmp(arg, "-o") == 0)
+			else if(arg[1] == 'I')
 			{
-				if(argCursor == argEnd)
+				char const* path = arg + 2;
+				if(*path == 0)
 				{
-					fprintf(stderr, "skub: expected argument for option '%s'\n", arg);
-					exit(1);					
+					path = readArg(arg, &argCursor, argEnd);
 				}
 
-				arg = *argCursor++;
-				gOutputPath = arg;
+				gIncludePath = path;
+			}
+			else if(strcmp(arg, "-o") == 0)
+			{
+				gOutputPath = readArg(arg, &argCursor, argEnd);
 			}
 			else
 			{
@@ -859,6 +879,17 @@ int main(
 	}
 
 	luaL_openlibs(L);
+
+	if(gIncludePath)
+	{
+		lua_getglobal(L, "package");
+		lua_pushstring(L, gIncludePath);
+		lua_pushstring(L, "/?.lua");
+		lua_concat(L, 2);
+		lua_setfield(L, -2, "path");		
+	}
+
+
 
 	while(argCursor != argEnd)
 	{
