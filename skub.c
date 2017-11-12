@@ -424,27 +424,26 @@ StringSpan readLine(char const** ioCursor, char const*end)
 		if(cursor == end)
 			break;
 
-		switch(*cursor++)
+		int c = *cursor++;
+		switch(c)
 		{
 		default:
 			continue;
 
 		case '\r': case '\n':
 			{
-				switch(*cursor)
+				int d = *cursor;
+				if( (c ^ d) == ('\r' ^ '\n'))
 				{
-				case '\r': case '\n':
 					cursor++;
-					break;
-
-				default:
-					break;
 				}
 			}
 			break;
 		}
 		break;
 	}
+
+//	fprintf(stderr, "LINE: '%.*s'\n", (int) (span.end - span.begin), span.begin);	
 
 	*ioCursor = cursor;
 	return span;
@@ -485,14 +484,14 @@ static SkubChunk* parseFile(
 		{
 			StringSpan line = readLine(&cursor, end);
 
-			fprintf(stderr, "LINE: {{ %.*s }}\n", (int) (line.end - line.begin), line.begin);
-
 			char const* openTag = findMatchInLine(openTagPattern, line);
 			if(!openTag)
 				continue;
 
 			StringSpan codeSpan;
 			codeSpan.begin = cursor;
+
+			StringSpan closeSpan;
 
 			// keep reading code lines until we see
 			// a line with an closing tag
@@ -508,7 +507,11 @@ static SkubChunk* parseFile(
 				line = readLine(&cursor, end);
 				char const* closeTag = findMatchInLine(closeTagPattern, line);
 				if(closeTag)
+				{
+					closeSpan = line;
+					closeSpan.end = cursor;
 					break;
+				}
 			}
 
 			// keep reading output lines until we
@@ -536,7 +539,7 @@ static SkubChunk* parseFile(
 				codeSpan.begin,
 				codeSpan.end);
 
-			chunk->prefix.end = outputSpan.begin;
+			chunk->prefix.end = closeSpan.end;
 			chunk->code = codeSpan;
 			chunk->outputSpan = outputSpan;
 
@@ -582,15 +585,15 @@ static char* pickOutputPath(
 
 	size_t inputSize = strlen(inputPath);
 
-	size_t bufferSize = inputSize + suffixSize + 1;
+	size_t concatSize = inputSize + suffixSize;
 
-	char* buffer = (char*) malloc(bufferSize);
+	char* buffer = (char*) malloc(concatSize + 1);
 	if(!buffer)
 		return NULL;
 
 	memcpy(buffer, inputPath, inputSize);
 	memcpy(buffer + inputSize, suffix, suffixSize);
-	buffer[bufferSize] = 0;
+	buffer[concatSize] = 0;
 
 	return buffer;
 }
@@ -975,6 +978,7 @@ static void processFile(
 	}
 	else
 	{
+		#if 0
 		outputPath = pickOutputPath(inputPath);
 		if(!outputPath)
 		{
@@ -984,6 +988,9 @@ static void processFile(
 				inputPath);
 			return;
 		}		
+		#else
+		outputPath = inputPath;
+		#endif
 	}
 
 //	fprintf(stderr, "skubbing '%s' -> '%s'\n", inputPath, outputPath);
