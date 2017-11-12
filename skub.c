@@ -246,30 +246,23 @@ static void readNodeBody(
 	int nesting = 0;
 	for(;;)
 	{
+		if(cursor == end)
+		{
+			/* Yep, we are at the end */
+			if(openCount >= 1)
+			{
+				fprintf(stderr, "skub: unclosed '{' at end of file\n");
+			}
+			node->body.end = cursor;
+			*ioCursor = cursor;
+			return;			
+		}
+
 		int c = *cursor;
 		switch(c)
 		{
 		default:
 			/* ordinary text: just keep going */
-			cursor++;
-			break;
-
-		case 0:
-			/* possible end of input */
-			if(cursor == end)
-			{
-				/* Yep, we are at the end */
-				if(openCount >= 1)
-				{
-					fprintf(stderr, "skub: unclosed '{' at end of file\n");
-				}
-				node->body.end = cursor;
-				*ioCursor = cursor;
-				return;
-			}
-			/* Not at the end. This is surprising,
-			   but we will treat it as an ordinary
-			   character */
 			cursor++;
 			break;
 
@@ -360,6 +353,213 @@ static SkubNode* processSpan(
 	return node;
 }
 
+static char const* findMatch(
+	char const* pattern,
+	char const* begin,
+	char const* end)
+{
+	size_t inputSize = end - begin;
+	size_t patternSize = strlen(pattern);
+
+	if(inputSize < patternSize)
+		return NULL;
+
+	end -= (patternSize - 1);
+
+	char const* cursor = begin;
+	while(cursor != end)
+	{
+		if(strncmp(cursor, pattern, patternSize) == 0)
+			return cursor;
+
+		cursor++;
+	}
+	return NULL;
+}
+
+static char const* findMatchInLine(
+	char const* pattern,
+	StringSpan 	line)
+{
+	return findMatch(pattern, line.begin, line.end);
+}
+
+static void addTextNode(
+	SkubNode*** ioLink,
+	char const* begin,
+	char const* end)
+{
+	if(begin == end)
+		return;
+
+	SkubNode* node = allocateNode();
+	node->text.begin = begin;
+	node->text.end = end;
+
+	*(*ioLink) = node;
+	(*ioLink) = &node->next;
+}
+
+typedef struct SkubChunk SkubChunk;
+struct SkubChunk
+{
+	StringSpan prefix;
+	StringSpan code;
+	StringSpan outputSpan;
+	SkubNode* codeNode;
+
+	SkubChunk*	next;
+};
+
+StringSpan readLine(char const** ioCursor, char const*end)
+{
+	StringSpan span;
+	char const* cursor = *ioCursor;
+
+	span.begin = cursor;
+
+	for(;;)
+	{
+		span.end = cursor;
+		if(cursor == end)
+			break;
+
+		switch(*cursor++)
+		{
+		default:
+			continue;
+
+		case '\r': case '\n':
+			{
+				switch(*cursor)
+				{
+				case '\r': case '\n':
+					cursor++;
+					break;
+
+				default:
+					break;
+				}
+			}
+			break;
+		}
+		break;
+	}
+
+	*ioCursor = cursor;
+	return span;
+}
+
+static SkubChunk* allocateChunk()
+{
+	SkubChunk* chunk = (SkubChunk*) malloc(sizeof(SkubChunk));
+	memset(chunk, 0, sizeof(SkubChunk));
+	return chunk;
+}
+
+static SkubChunk* parseFile(
+	char const* begin,
+	char const* end)
+{
+	SkubChunk* chunks = NULL;
+	SkubChunk** link = &chunks;
+
+	char const* cursor = begin;
+	char const* rawBegin = cursor;
+
+	char const* openTagPattern = "[[[skub:";
+	char const* closeTagPattern = "]]]";
+	char const* endTagPattern = "[[[end]]]";
+
+
+	SkubChunk* chunk = allocateChunk();
+	*link = chunk;
+	link = &chunk->next;
+
+	chunk->prefix.begin = cursor;
+
+	while(cursor != end)
+	{
+
+		while(cursor != end)
+		{
+			StringSpan line = readLine(&cursor, end);
+
+			fprintf(stderr, "LINE: {{ %.*s }}\n", (int) (line.end - line.begin), line.begin);
+
+			char const* openTag = findMatchInLine(openTagPattern, line);
+			if(!openTag)
+				continue;
+
+			StringSpan codeSpan;
+			codeSpan.begin = cursor;
+
+			// keep reading code lines until we see
+			// a line with an closing tag
+			for(;;)
+			{
+				if(cursor == end)
+				{
+					assert(0);
+				}
+
+				codeSpan.end = cursor;
+
+				line = readLine(&cursor, end);
+				char const* closeTag = findMatchInLine(closeTagPattern, line);
+				if(closeTag)
+					break;
+			}
+
+			// keep reading output lines until we
+			// see a line with an ending tag
+
+			StringSpan outputSpan;
+			outputSpan.begin = cursor;
+			for(;;)
+			{
+				if(cursor == end)
+				{
+					assert(0);
+				}
+
+				outputSpan.end = cursor;
+
+				line = readLine(&cursor, end);
+				char const* endTag = findMatchInLine(endTagPattern, line);
+				if(endTag)
+					break;
+			}
+
+			// Okay, we've found everything
+			chunk->codeNode = processSpan(
+				codeSpan.begin,
+				codeSpan.end);
+
+			chunk->prefix.end = outputSpan.begin;
+			chunk->code = codeSpan;
+			chunk->outputSpan = outputSpan;
+
+			chunk = allocateChunk();
+			*link = chunk;
+			link = &chunk->next;
+
+			chunk->prefix.begin = outputSpan.end;
+		}
+	}
+
+	chunk->prefix.end = end;
+	chunk->code.begin = end;
+	chunk->code.end = end;
+	chunk->outputSpan.begin = end;
+	chunk->outputSpan.end = end;
+	chunk->codeNode = 0;
+
+	return chunks;
+}
+
+
+
 static int stringEndsWith(
 	char const*	str,
 	char const*	suffix)
@@ -377,19 +577,20 @@ static int stringEndsWith(
 static char* pickOutputPath(
 	char const* inputPath)
 {
+	char const* suffix = ".out.cpp";
+	size_t suffixSize = strlen(suffix);
+
 	size_t inputSize = strlen(inputPath);
-	char const* skubExt = ".skub";
-	size_t prefixSize = inputSize - strlen(skubExt);
 
-	if(!stringEndsWith(inputPath, skubExt))
-		return NULL;
+	size_t bufferSize = inputSize + suffixSize + 1;
 
-	char* buffer = (char*) malloc(prefixSize + 1);
+	char* buffer = (char*) malloc(bufferSize);
 	if(!buffer)
 		return NULL;
 
-	memcpy(buffer, inputPath, prefixSize);
-	buffer[prefixSize] = 0;
+	memcpy(buffer, inputPath, inputSize);
+	memcpy(buffer + inputSize, suffix, suffixSize);
+	buffer[bufferSize] = 0;
 
 	return buffer;
 }
@@ -442,13 +643,63 @@ static void emitRaw(
 	if(begin == end)
 		return;
 
-	writeRawT(writer, " _RAW([==[");
 	if(*begin == '\n')
 	{
-		writeRawT(writer, "\n");
+		writeRawT(writer, " _RAW(\"\\n\");");
 	}
+
+	if(begin == end)
+		return;
+
+	writeRawT(writer, " _RAW([==[");
 	writeRaw(writer, begin, end);
 	writeRawT(writer, "]==]);");
+}
+
+static void emitRawX(
+	SkubWriter*	writer,
+	char const* begin,
+	char const* end)
+{
+	if(begin == end)
+		return;
+
+	writeRawT(writer, " _RAW([==[");
+
+	char const* cursor = begin;
+	while(cursor != end)
+	{
+		char c = *cursor++;
+		switch(c)
+		{
+		default:
+			{
+				char buf[2] = { c, 0 };
+				writeRawT(writer, buf);
+			}
+			break;
+
+		case '\n':
+			writeRawT(writer, "]==]);_RAW(\"\\n\");_RAW([==[");
+			break;
+		}
+
+	}
+	writeRawT(writer, "]==]);");
+}
+
+// Emit text as comments
+static void emitRawComment(
+	SkubWriter*	writer,
+	char const* begin,
+	char const* end)
+{
+	if(begin == end)
+		return;
+
+	writeRawT(writer, "--[==[");
+	writeRaw(writer, begin, end);
+	writeRawT(writer, "]==]");
 }
 
 static int isEmpty(StringSpan span)
@@ -462,16 +713,47 @@ enum {
 	HAS_BODY = 0x4,
 };
 
-static void emitNode(
+static void emitNodeQ(
 	SkubWriter*	writer,
 	SkubNode*	node);
+
+static void emitNodeS(
+	SkubWriter*	writer,
+	SkubNode*	node);
+
+static void emitSpliceStmtNode(
+	SkubWriter*	writer,
+	SkubNode*	node);
+
+static void emitChunks(
+	SkubWriter* writer,
+	SkubChunk*	chunks)
+{
+	SkubChunk* chunk = chunks;
+	while(chunk)
+	{
+		emitRaw(writer, chunk->prefix.begin, chunk->code.begin);
+		emitRawX(writer, chunk->code.begin, chunk->prefix.end);
+
+		if(chunk->codeNode)
+		{		
+			emitSpliceStmtNode(writer, chunk->codeNode);
+		}
+
+		emitRawComment(writer, chunk->code.end, chunk->prefix.end);
+
+		emitRawComment(writer, chunk->outputSpan.begin, chunk->outputSpan.end);
+
+		chunk = chunk->next;
+	}
+}
 
 static void emitQuoteExprNode(
 	SkubWriter*	writer,
 	SkubNode*	node)
 {
 	writeRawT(writer, "_QUOTE(function() ");
-	emitNode(writer, node);
+	emitNodeS(writer, node);
 	writeRawT(writer, "end)");
 }
 
@@ -479,7 +761,7 @@ static void emitQuoteStmtNode(
 	SkubWriter*	writer,
 	SkubNode*	node)
 {
-	emitNode(writer, node);
+	emitNodeS(writer, node);
 }
 
 static void emitQuoteNode(
@@ -505,6 +787,7 @@ static void emitQuoteNode(
 
 	default:
 		fprintf(stderr, "skub: unexpected quote flavor 0x%x\n", node->flavor);
+		assert(0);
 
 		fprintf(stderr, "text(%.*s)",
 			(int)(node->text.end - node->text.begin),
@@ -560,7 +843,7 @@ static void emitSpliceStmtNode(
 
 // Emit a node that "escapes" from
 // quoted text back into Lua
-static void emitEscapeNode(
+static void emitSpliceNode(
 	SkubWriter*	writer,
 	SkubNode*	node)
 {
@@ -597,7 +880,7 @@ static void emitEscapeNode(
 
 // Here we are emitting top-level text,
 // which may have embedded escapes.
-static void emitNode(
+static void emitNodeQ(
 	SkubWriter*	writer,
 	SkubNode*	node)
 {
@@ -606,7 +889,23 @@ static void emitNode(
 	{
 		emitRaw(writer, cursor, nn->text.begin);
 
-		emitEscapeNode(writer, nn);
+		emitQuoteNode(writer, nn);
+
+		cursor = nn->text.end;
+	}
+	emitRaw(writer, cursor, node->body.end);
+}
+
+static void emitNodeS(
+	SkubWriter*	writer,
+	SkubNode*	node)
+{
+	char const* cursor = node->body.begin;
+	for(SkubNode* nn = node->firstChild; nn; nn = nn->next)
+	{
+		emitRaw(writer, cursor, nn->text.begin);
+
+		emitSpliceNode(writer, nn);
 
 		cursor = nn->text.end;
 	}
@@ -696,26 +995,13 @@ static void processFile(
 		return;		
 	}
 
-	SkubNode* rootNode = processSpan(span.begin, span.end);
+	SkubChunk* chunks = parseFile(span.begin, span.end);
 
 	SkubWriter writer = { 0, 0, 0 };
 	writeRawT(&writer,
-		"local _RAW, _SPLICE = ...; "
-		"local _ctxt = {} "
-		"local function _QUOTE(f) "
-			"local _saved_raw = _RAW; "
-			"local _saved_splice = _SPLICE; "
-			"local _strs = {}; "
-			"_RAW = function(s) table.insert(_strs, tostring(s)); end; "
-			"_SPLICE = function(s) table.insert(_strs, tostring(s)); end; "
-			"f()"
-			"_RAW = _saved_raw; "
-			"_SPLICE = _saved_splice; "
-			"print('QQ', table.concat(_strs), 'qq'); "
-			"return table.concat(_strs); "
-		"end; ");
+		"local _RAW, _SPLICE = ...; ");
 
-	emitNode(&writer, rootNode);
+	emitChunks(&writer, chunks);
 	char const* empty = "";
 	writeRaw(&writer, empty, empty + 1);
 
@@ -723,14 +1009,24 @@ static void processFile(
 	processed.begin = writer.begin;
 	processed.end = writer.cursor - 1;
 
-//	fprintf(stderr, "X{{{{%.*s}}}}\n", (int)(processed.end - processed.begin), processed.begin);
+	{
+		FILE* dump = fopen("dump.lua", "w");	
+		fprintf(dump, "%.*s\n", (int)(processed.end - processed.begin), processed.begin);
+		fclose(dump);
+//		exit(0);
+	}
+
+	char* luaFileName = (char*)
+		malloc(strlen(inputPath) + 2);
+	luaFileName[0] = '@';
+	memcpy(luaFileName + 1, inputPath, strlen(inputPath) + 1);
 
 	StringSpan readerState = processed;
 	int err = lua_load(
 		L,
 		&luaReadCallback,
 		(void*) &readerState,
-		inputPath,
+		luaFileName,
 		0);
 	if(err != LUA_OK)
 	{
@@ -740,26 +1036,6 @@ static void processFile(
 	}
 
 	FILE* output = fopen(outputPath, "w");
-
-	fprintf(output, "/* skub: generated code - do not edit */\n");
-	fprintf(output, "#line 1 \"");
-	for(char const* cc = inputPath; *cc; ++cc)
-	{
-		switch(*cc)
-		{
-		default:
-			fprintf(output, "%c", *cc);
-			break;
-
-		case '\\':
-			fprintf(output, "/");
-			break;
-		}
-	}
-	fprintf(output, "\"\n");
-
-
-
 	if(!output)
 	{
 		fprintf(stderr,

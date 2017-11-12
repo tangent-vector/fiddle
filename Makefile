@@ -30,7 +30,7 @@ $(OUTPUTDIR):
 	mkdir -p $(OUTPUTDIR)
 
 test: $(SKUB)
-	$(SKUB) test.cpp.skub
+	$(SKUB) test.cpp
 
 
 clean:
