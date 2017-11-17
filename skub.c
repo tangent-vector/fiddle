@@ -933,11 +933,12 @@ static char const* luaReadCallback(
 static int luaRawCallback(lua_State* L)
 {
 //	fprintf(stderr, "rawCallback[[[\n");
-	FILE* file = (FILE*) lua_touserdata(L, lua_upvalueindex(1));
+	SkubWriter* writer = (SkubWriter*) lua_touserdata(L, lua_upvalueindex(1));
 
 	size_t len = 0;
 	char const* text = luaL_tolstring(L, 1, &len);
-	fprintf(file, "%.*s", (int)(len), text);
+
+	writeRaw(writer, text, text + len);
 
 //	fprintf(stderr, "%.*s]]]\n", (int)(len), text);
 
@@ -947,11 +948,12 @@ static int luaRawCallback(lua_State* L)
 static int luaSpliceCallback(lua_State* L)
 {
 //	fprintf(stderr, "spliceCallback[[[\n");
-	FILE* file = (FILE*) lua_touserdata(L, lua_upvalueindex(1));
+	SkubWriter* writer = (SkubWriter*) lua_touserdata(L, lua_upvalueindex(1));
 
 	size_t len = 0;
 	char const* text = luaL_tolstring(L, 1, &len);
-	fprintf(file, "%.*s", (int)(len), text);
+
+	writeRaw(writer, text, text + len);
 
 //	fprintf(stderr, "%.*s]]]\n", (int)(len), text);
 
@@ -1042,19 +1044,13 @@ static void processFile(
 		exit(1);
 	}
 
-	FILE* output = fopen(outputPath, "w");
-	if(!output)
-	{
-		fprintf(stderr,
-			"skub: cannot open '%s' for writing\n",
-			outputPath);
-		return;
-	}
+	SkubWriter outputWriter = { 0, 0, 0 };
 
-	lua_pushlightuserdata(L, output);
+
+	lua_pushlightuserdata(L, &outputWriter);
 	lua_pushcclosure(L, &luaRawCallback, 1);
 
-	lua_pushlightuserdata(L, output);
+	lua_pushlightuserdata(L, &outputWriter);
 	lua_pushcclosure(L, &luaSpliceCallback, 1);
 
 	err = lua_pcall(L, 2, 0, 0);
@@ -1064,6 +1060,21 @@ static void processFile(
 		fprintf(stderr, "skub: %s\n", message);		
 		exit(1);
 	}
+	writeRaw(&outputWriter, empty, empty + 1);
+
+	StringSpan outputText;
+	outputText.begin = outputWriter.begin;
+	outputText.end = outputWriter.cursor - 1;
+
+	FILE* output = fopen(outputPath, "w");
+	if(!output)
+	{
+		fprintf(stderr,
+			"skub: cannot open '%s' for writing\n",
+			outputPath);
+		return;
+	}
+	fprintf(output, "%.*s", (int) (outputText.end - outputText.begin), outputText.begin);
 
 	fclose(output);
 
