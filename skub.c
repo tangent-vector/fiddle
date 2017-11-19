@@ -605,30 +605,59 @@ typedef struct SkubWriter
 	char* end;
 } SkubWriter;
 
-static void writeRaw(
+static void writeRawByte(
 	SkubWriter*	writer,
-	char const* begin,
-	char const* end)
+	char 		val)
 {
-	size_t len = end - begin;
 	char* c = writer->cursor;
 	char* e = writer->end;
-	if(c + len > e)
+	if(c == e)
 	{
 		char* b = writer->begin;
 
+        size_t oldOffset = c - b;
 		size_t oldSize = e - b;
 		size_t newSize = oldSize ? oldSize * 2 : 1024; 
 
 		char* n = (char*) realloc(b, newSize);
 
-		writer->begin = n;
-		writer->end = n + newSize;
-		c = n + (c - b);
+        c = n + oldOffset;
+        e = n + newSize;
+        
+        writer->begin = n;
+		writer->end = e;
 	}
 
-	memcpy(c, begin, len);
-	writer->cursor = c + len;
+	*c++ = val;
+	writer->cursor = c;
+}
+
+static void writeRaw(
+	SkubWriter*	writer,
+	char const* begin,
+	char const* end)
+{
+	char const* cc = begin;
+	while(cc != end)
+	{
+		char c = *cc++;
+		switch(c)
+		{
+		case '\r': case '\n':
+			if(cc != end)
+			{
+				char d = *cc;
+				if((c ^ d) == ('\n' ^ '\r'))
+					cc++;
+			}
+			writeRawByte(writer, '\n');
+			break;
+
+		default:
+			writeRawByte(writer, c);
+			break;
+		}
+	}
 }
 
 static void writeRawT(
@@ -646,13 +675,18 @@ static void emitRaw(
 	if(begin == end)
 		return;
 
-	if(*begin == '\n')
-	{
-		writeRawT(writer, " _RAW(\"\\n\");");
-	}
-
 	if(begin == end)
 		return;
+
+	switch(*begin)
+	{
+	default:
+		break;
+
+	case '\r': case '\n':
+		writeRawT(writer, " _RAW(\"\\n\");");
+		break;
+	}
 
 	writeRawT(writer, " _RAW([==[");
 	writeRaw(writer, begin, end);
@@ -682,7 +716,13 @@ static void emitRawX(
 			}
 			break;
 
-		case '\n':
+		case '\r': case '\n':
+			if(cursor != end)
+			{
+				char d = *cursor;
+				if((c ^ d) == ('\r' ^ '\n'))
+					cursor++;
+			}
 			writeRawT(writer, "]==]);_RAW(\"\\n\");_RAW([==[");
 			break;
 		}
@@ -1206,7 +1246,13 @@ on any additional complexity.
 
 /* TODO: Figure out when we can enable this...
 */
+#ifdef _WIN32
+#include <Windows.h>
+#undef LoadString
+#define LoadString lua_LoadString
+#else
 #define LUA_USE_POSIX
+#endif
 
 #include "external/lua/src/lapi.c"
 #include "external/lua/src/lauxlib.c"
