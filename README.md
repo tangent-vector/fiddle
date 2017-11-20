@@ -52,7 +52,7 @@ out there to choose from.
 The goals of Fiddle are:
 
 * Minimal requirements. You don't need to ensure that all
-  your developers install the right version of Pythong or
+  your developers install the right version of Python or
   some other scripting language. Just drop the Fiddle
   sources into your repository and get going.
 
