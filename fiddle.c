@@ -444,6 +444,25 @@ StringSpan commonPrefix(
 	return prefix;
 }
 
+static Chunk* parseTemplateFile(
+	char const* begin,
+	char const* end)
+{
+	Chunk* chunk = allocateChunk();
+
+	StringSpan code;
+	code.begin = begin;
+	code.end = end;
+
+	StringSpan prefix = emptyStringSpan();
+
+	chunk->codeNode = parseTemplate(
+		code,
+		prefix);
+
+	return chunk;
+}
+
 /*
 
 The parsing of a source file with embedded templates
@@ -695,22 +714,22 @@ static int stringEndsWith(
 }
 
 static char* pickOutputPath(
-	char const* inputPath)
+	char const* inputPath,
+	char const* suffix)
 {
-	char const* suffix = ".out.cpp";
-	size_t suffixSize = strlen(suffix);
+	assert(stringEndsWith(inputPath, suffix));
 
 	size_t inputSize = strlen(inputPath);
+	size_t suffixSize = strlen(suffix);
 
-	size_t concatSize = inputSize + suffixSize;
+	size_t trimmedSize = inputSize - suffixSize;
 
-	char* buffer = (char*) malloc(concatSize + 1);
+	char* buffer = (char*) malloc(trimmedSize + 1);
 	if(!buffer)
 		return NULL;
 
-	memcpy(buffer, inputPath, inputSize);
-	memcpy(buffer + inputSize, suffix, suffixSize);
-	buffer[concatSize] = 0;
+	memcpy(buffer, inputPath, trimmedSize);
+	buffer[trimmedSize] = 0;
 
 	return buffer;
 }
@@ -1047,9 +1066,19 @@ static void processFile(
 
 	*/
 	Chunk* chunks = 0;
-	if(stringEndsWith(inputPath, ".fiddle"))
+	char const* templateSuffix = ".fiddle";
+	char const* literateSuffix = ".md";
+	if(stringEndsWith(inputPath, templateSuffix))
 	{
-		assert(!"template file case unimplemented");
+		// Need to trim the end of the path
+		outputPath = pickOutputPath(inputPath, templateSuffix);
+
+		chunks = parseTemplateFile(span.begin, span.end);
+	}
+	else if(stringEndsWith(inputPath, literateSuffix))
+	{
+		outputPath = pickOutputPath(inputPath, literateSuffix);
+		assert(!"literate mode not implemented");
 	}
 	else
 	{
