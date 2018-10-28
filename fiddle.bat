@@ -50,21 +50,21 @@ for /F %%F in ('dir /B /O:D %SRCFILE% %EXEFILE%') do set NEWFILE=%%F
 ::
 :: Now based on what we found, we decide what to do next:
 ::
-if "%NEWFILE%"=="%SRCFILE%" (
 ::
 :: * If the source file is newer, then we need to build.
 ::
-	goto Build
-) else if "%NEWFILE%"=="%EXEFILE%" (
 ::
 :: * If the executable file is newer, then we can just run it.
 ::
-	goto Run
-) else (
 ::
 :: * If neither of these is true, something went wrong in
 ::   our build logic (maybe the source file is missing?).
 ::
+if "%NEWFILE%"=="%SRCFILE%" (
+	goto Build
+) else if "%NEWFILE%"=="%EXEFILE%" (
+	goto Run
+) else (
 	echo "fiddle: error: couldn't find fiddle.exe or fiddle.c"
 	goto Error
 )
@@ -82,11 +82,22 @@ if "%NEWFILE%"=="%SRCFILE%" (
 :: don't even check if the appropriate environment variable
 :: is even set. This needs work:
 ::
-call "%VS120COMNTOOLS%VSVARS32.bat"
+call "%VS150COMNTOOLS%VSVARS32.bat" 2>nul
+if %errorlevel% EQU 0 ( goto Compile )
+call "%VS140COMNTOOLS%VSVARS32.bat" 2>nul
+if %errorlevel% EQU 0 ( goto Compile )
+call "%VS130COMNTOOLS%VSVARS32.bat" 2>nul
+if %errorlevel% EQU 0 ( goto Compile )
+call "%VS120COMNTOOLS%VSVARS32.bat" 2>nul
+if %errorlevel% EQU 0 ( goto Compile )
+
+echo "Failed to find a Visual Studio version installed"
+goto Exit
 ::
 :: Invokeing the compiler is done in a pretty standard way.
 ::
-cl /nologo fiddle.c /link /out:fiddle.exe
+:Compile
+cl /nologo fiddle.c /link setargv.obj /out:fiddle.exe 1>nul
 ::
 :: If we need to debug we can do the following instead:
 ::
