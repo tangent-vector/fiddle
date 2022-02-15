@@ -1131,6 +1131,8 @@ static void processFile(
 	SkubWriter writer = { 0, 0, 0 };
 	writeRawT(&writer,
 		"local _RAW, _SPLICE = ...; ");
+	writeRawT(&writer,
+		"fiddle_write = _RAW; ");
 
 	emitChunks(&writer, chunks);
 	char const* empty = "";

@@ -77,6 +77,30 @@ if "%NEWFILE%"=="%SRCFILE%" (
 :: deal with extra complexity.
 ::
 :Build
+
+:: If `cl.exe` (the C/C++ compiler) is already available in our
+:: current path, then we will go ahead and invoke it directly.
+::
+cl >nul 2>nul
+if %errorlevel% NEQ 0 (
+	goto AFTERCHECKCL
+) else (
+	goto Compile
+)
+:AFTERCHECKCL
+
+:: Start by attempting to use `vswhere` to locate things.
+set VSWHERE="C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe"
+if exist "%VSWHERE%" (
+	set VSPATH=
+	for /F "delims=" %%F in ('%VSWHERE% -latest -property installationPath') do set VSPATH=%%F
+
+	if exist "%VSPATH%" (
+		call "%VSPATH%\VC\Auxiliary\Build\vcvarsall.bat" x86
+		goto Compile
+	)
+)
+
 ::
 :: For right now, we only check a single VS version, and we
 :: don't even check if the appropriate environment variable
